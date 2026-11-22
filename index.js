@@ -130,8 +130,82 @@ const validId = (req, res, next) =>
     ? next()
     : res.status(400).send({ message: "Invalid id" });
 
+//root route
 app.get("/", (req, res) => {
-  res.send("pizzahub-server is running");
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>PizzaHub Server</title>
+
+        <style>
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
+
+          body {
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f4f7f5;
+            font-family: Arial, sans-serif;
+            color: #263b32;
+          }
+
+          .container {
+            text-align: center;
+          }
+
+          h1 {
+            font-size: 28px;
+            margin-bottom: 12px;
+          }
+
+          p {
+            color: #64756c;
+            font-size: 15px;
+          }
+
+          .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 20px;
+            padding: 10px 16px;
+            background: #e6f5eb;
+            color: #23834b;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+          }
+
+          .dot {
+            width: 8px;
+            height: 8px;
+            background: #22c55e;
+            border-radius: 50%;
+          }
+        </style>
+      </head>
+
+      <body>
+        <div class="container">
+          <h1>🍕 PizzaHub Server</h1>
+          <p>Your backend server is running successfully.</p>
+
+          <div class="status">
+            <span class="dot"></span>
+            Server is running
+          </div>
+        </div>
+      </body>
+    </html>
+  `);
 });
 
 // get all users (admin only)
