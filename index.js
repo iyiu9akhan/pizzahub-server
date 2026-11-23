@@ -11,10 +11,6 @@ const app = express();
 const port = process.env.PORT || 5000;
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// middleware
-app.use(express.json());
-app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:3000" }));
-
 // mongoDB connection
 const client = new MongoClient(
   `mongodb+srv://${process.env.MONGODB_USER}:${process.env.MONGODB_PASS}@cluster0.joq5z4d.mongodb.net/`,
@@ -39,6 +35,7 @@ const sessions = database.collection("session");
 const itemsCollection = database.collection("items");
 const ordersCollection = database.collection("orders");
 const paymentsCollection = database.collection("payments");
+const transactionsCollection = database.collection("transactions");
 const reviewsCollection = database.collection("reviews");
 const wishlistCollection = database.collection("wishlists");
 
@@ -52,12 +49,149 @@ await Promise.all([
   ordersCollection.createIndex({ vendorId: 1 }),
   ordersCollection.createIndex({ customerId: 1 }),
   itemsCollection.createIndex({ vendorId: 1, status: 1 }),
+  transactionsCollection.createIndex({ stripeSessionId: 1 }, { unique: true }),
 ]);
 
-// payment routes
-app.use("/payments", paymentsRouter(paymentsCollection, stripe));
+// webhook must receive raw body before express.json() parses anything
+app.post(
+  "/payments/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    try {
+      const sig = req.headers["stripe-signature"];
+      let event;
+      try {
+        event = stripe.webhooks.constructEvent(
+          req.body,
+          sig,
+          process.env.STRIPE_WEBHOOK_SECRET,
+        );
+      } catch (err) {
+        return res.status(400).send({ message: `Webhook error: ${err.message}` });
+      }
+
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+        if (session.payment_status === "paid") {
+          const vendorId = session.metadata?.vendorId;
+          if (vendorId) {
+            // Better Auth stores _id as a plain string; also try ObjectId for safety
+            const idVariants = [vendorId];
+            if (ObjectId.isValid(vendorId)) idVariants.push(new ObjectId(vendorId));
+            const query = { _id: { $in: idVariants } };
+            const vendor = await users.findOne(query);
+            if (vendor && vendor.role === "vendor") {
+              const now = new Date();
+              const currentExpiry =
+                vendor.subscriptionExpiresAt instanceof Date
+                  ? vendor.subscriptionExpiresAt
+                  : vendor.subscriptionExpiresAt
+                    ? new Date(vendor.subscriptionExpiresAt)
+                    : null;
+              // renewal extends from the later of (current expiry, now)
+              const base =
+                currentExpiry && currentExpiry > now ? currentExpiry : now;
+              const expiresAt = new Date(base);
+              expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+
+              // idempotent insert via unique stripeSessionId index
+              try {
+                await transactionsCollection.insertOne({
+                  vendorId: String(vendorId),
+                  plan: "premium",
+                  amount: session.amount_total,
+                  currency: session.currency,
+                  stripeSessionId: session.id,
+                  stripeSubscriptionId: null,
+                  paymentIntentId: session.payment_intent ?? null,
+                  status: "paid",
+                  createdAt: now,
+                });
+              } catch (e) {
+                if (e.code !== 11000) throw e; // ignore duplicate
+              }
+
+              await users.updateOne(
+                query,
+                {
+                  $set: {
+                    premium: true,
+                    subscriptionPlan: "premium",
+                    subscriptionExpiresAt: expiresAt,
+                    updatedAt: now,
+                  },
+                },
+              );
+            }
+          }
+        }
+      } else if (event.type === "charge.refunded") {
+        const charge = event.data.object;
+        const paymentIntentId = charge.payment_intent;
+        if (paymentIntentId) {
+          const tx = await transactionsCollection.findOne({ paymentIntentId });
+          if (tx) {
+            await transactionsCollection.updateOne(
+              { _id: tx._id },
+              { $set: { status: "refunded" } },
+            );
+            if (tx.vendorId) {
+              const refundIdVariants = [tx.vendorId];
+              if (ObjectId.isValid(tx.vendorId)) refundIdVariants.push(new ObjectId(tx.vendorId));
+              const refundQuery = { _id: { $in: refundIdVariants } };
+              await users.updateOne(
+                refundQuery,
+                {
+                  $set: {
+                    premium: false,
+                    subscriptionPlan: "free",
+                    subscriptionExpiresAt: null,
+                    updatedAt: new Date(),
+                  },
+                },
+              );
+            }
+          }
+        }
+      }
+
+      res.status(200).send({ received: true });
+    } catch (err) {
+      console.error("Webhook handler error:", err);
+      res.status(500).send({ success: false, message: "Something went wrong" });
+    }
+  },
+);
+
+// middleware
+app.use(express.json());
+app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:3000" }));
 
 const ALLOWED_ROLES = ["customer", "vendor", "admin"];
+
+// isPremiumActive: true only if premium flag is set and expiry is in the future (or no expiry)
+const isPremiumActive = async (user) => {
+  if (!user || user.premium !== true) return false;
+  const expiry = user.subscriptionExpiresAt;
+  if (!expiry) return true; // legacy records with no expiry: still active
+  const expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
+  if (expiryDate <= new Date()) {
+    // downgrade expired vendor
+    await users.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          premium: false,
+          subscriptionPlan: "free",
+          subscriptionExpiresAt: null,
+          updatedAt: new Date(),
+        },
+      },
+    );
+    return false;
+  }
+  return true;
+};
 const ITEM_FIELDS = [
   "itemName",
   "category",
@@ -120,15 +254,18 @@ const optionalAuth = handle(async (req, res, next) => {
 // role check. always use after verifyToken
 const verifyRole =
   (...roles) =>
-  (req, res, next) =>
-    roles.includes(req.user?.role)
-      ? next()
-      : res.status(403).send({ message: "Forbidden", code: "FORBIDDEN" });
+    (req, res, next) =>
+      roles.includes(req.user?.role)
+        ? next()
+        : res.status(403).send({ message: "Forbidden", code: "FORBIDDEN" });
 
 const validId = (req, res, next) =>
   ObjectId.isValid(req.params.id)
     ? next()
     : res.status(400).send({ message: "Invalid id" });
+
+// payment routes
+app.use("/payments", paymentsRouter(paymentsCollection, stripe, verifyToken));
 
 //root route
 app.get("/", (req, res) => {
@@ -230,12 +367,18 @@ app.get(
     }
     const user = await users.findOne(
       { _id: new ObjectId(id) },
-      { projection: { premium: 1, role: 1 } },
+      { projection: { premium: 1, role: 1, subscriptionPlan: 1, subscriptionExpiresAt: 1 } },
     );
     if (!user) return res.status(404).send({ message: "User not found" });
 
     const isVendor = user.role === "vendor";
-    res.send({ isVendor, premium: isVendor && user.premium === true });
+    const premium = isVendor && (await isPremiumActive(user));
+    res.send({
+      isVendor,
+      premium,
+      plan: premium ? "premium" : "free",
+      expiresAt: premium ? (user.subscriptionExpiresAt ?? null) : null,
+    });
   }),
 );
 
@@ -331,15 +474,69 @@ app.patch(
 // - vendor: only his own items (any status) -> /items/manage
 // - admin: all items (any status) -> /items/manage
 
-// public list: approved only
+// public list: approved only (with search, category, location, and sort)
 app.get(
   "/items",
   handle(async (req, res) => {
     const filter = { status: "approved" };
     if (req.query.vendorId) filter.vendorId = req.query.vendorId;
-    res.send(await itemsCollection.find(filter).sort({ _id: -1 }).toArray());
+
+    if (req.query.category && req.query.category !== "All") {
+      filter.category = req.query.category;
+    }
+
+    if (req.query.location) {
+      filter.location = req.query.location;
+    }
+
+    if (req.query.q) {
+      const q = String(req.query.q).trim();
+      if (q) {
+        const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const regex = new RegExp(escaped, "i");
+        filter.$or = [
+          { itemName: regex },
+          { description: regex },
+          { location: regex },
+          { vendorName: regex },
+        ];
+      }
+    }
+
+    let sort = { _id: -1 };
+    if (req.query.sort === "price_asc") {
+      sort = { price: 1, _id: -1 };
+    } else if (req.query.sort === "price_desc") {
+      sort = { price: -1, _id: -1 };
+    }
+
+    const items = await itemsCollection.find(filter).sort(sort).toArray();
+    res.send(await enrichItemsWithPremium(items));
   }),
 );
+
+// helper: batch-enrich items with vendorPremium flag
+async function enrichItemsWithPremium(items) {
+  if (!items.length) return items;
+  const vendorIds = [...new Set(items.map((i) => i.vendorId).filter(Boolean))];
+  const objectIds = vendorIds
+    .filter((id) => ObjectId.isValid(id))
+    .map((id) => new ObjectId(id));
+  const vendorDocs = await users
+    .find({ _id: { $in: [...objectIds, ...vendorIds] } })
+    .project({ _id: 1, premium: 1, subscriptionExpiresAt: 1 })
+    .toArray();
+  const premiumSet = new Set();
+  for (const v of vendorDocs) {
+    if (await isPremiumActive(v)) {
+      premiumSet.add(v._id.toString());
+    }
+  }
+  return items.map((item) => ({
+    ...item,
+    vendorPremium: item.vendorId ? premiumSet.has(String(item.vendorId)) : false,
+  }));
+}
 
 // vendor: own items / Admin: all items (id comes from the token, not the client)
 app.get(
@@ -352,13 +549,16 @@ app.get(
   }),
 );
 
-// count of the logged in vendor's items (free limit)
+// count of the logged in vendor's items (free limit: pending or approved)
 app.get(
   "/items/count",
   verifyToken,
   verifyRole("vendor"),
   handle(async (req, res) => {
-    const count = await itemsCollection.countDocuments({ vendorId: uid(req) });
+    const count = await itemsCollection.countDocuments({
+      vendorId: uid(req),
+      status: { $in: ["pending", "approved"] },
+    });
     res.send({ count });
   }),
 );
@@ -372,8 +572,11 @@ app.post(
     const vendorId = uid(req);
 
     // req.user is fresh from the DB, so premium is already here
-    if (req.user.premium !== true) {
-      const count = await itemsCollection.countDocuments({ vendorId });
+    if (!(await isPremiumActive(req.user))) {
+      const count = await itemsCollection.countDocuments({
+        vendorId,
+        status: { $in: ["pending", "approved"] },
+      });
       if (count >= FREE_LIMIT) {
         return res.status(403).send({
           success: false,
@@ -411,6 +614,21 @@ app.post(
   }),
 );
 
+// distinct locations of approved items (registered before /items/:id)
+app.get(
+  "/items/locations",
+  handle(async (req, res) => {
+    const locations = await itemsCollection.distinct("location", {
+      status: "approved",
+      location: { $exists: true, $ne: "" },
+    });
+    const cleaned = locations
+      .filter((loc) => typeof loc === "string" && loc.trim())
+      .map((l) => l.trim());
+    res.send([...new Set(cleaned)].sort());
+  }),
+);
+
 // single item. not approved items are visible only to the owner vendor and admins
 app.get(
   "/items/:id",
@@ -427,7 +645,8 @@ app.get(
     if (item.status !== "approved" && !isAdmin && !isOwner) {
       return res.status(404).send({ message: "Item not found" });
     }
-    res.send(item);
+    const [enriched] = await enrichItemsWithPremium([item]);
+    res.send(enriched);
   }),
 );
 
@@ -454,7 +673,68 @@ app.put(
   }),
 );
 
-// approve / reject an item (admin only)
+// vendor availability toggle (approved <-> inactive)
+app.patch(
+  "/items/:id/availability",
+  verifyToken,
+  verifyRole("vendor"),
+  validId,
+  handle(async (req, res) => {
+    const { status } = req.body;
+    if (!["approved", "inactive"].includes(status)) {
+      return res.status(400).send({
+        success: false,
+        message: "Status must be either 'approved' or 'inactive'",
+      });
+    }
+
+    const vendorId = uid(req);
+    const item = await itemsCollection.findOne({
+      _id: new ObjectId(req.params.id),
+      vendorId,
+    });
+    if (!item) {
+      return res.status(404).send({ success: false, message: "Item not found" });
+    }
+
+    // Allowed only between approved and inactive
+    if (!["approved", "inactive"].includes(item.status)) {
+      return res.status(400).send({
+        success: false,
+        message: "Only approved or inactive items can toggle availability",
+      });
+    }
+
+    if (item.status === status) {
+      return res.send({ success: true, status });
+    }
+
+    // Free plan limit counts items with status "pending" or "approved"
+    if (status === "approved" && !(await isPremiumActive(req.user))) {
+      const count = await itemsCollection.countDocuments({
+        vendorId,
+        status: { $in: ["pending", "approved"] },
+      });
+      if (count >= FREE_LIMIT) {
+        return res.status(403).send({
+          success: false,
+          code: "LIMIT_REACHED",
+          message:
+            "LIMIT_REACHED: Free plan limit reached. Upgrade to Premium.",
+        });
+      }
+    }
+
+    await itemsCollection.updateOne(
+      { _id: new ObjectId(req.params.id), vendorId },
+      { $set: { status, updatedAt: new Date() } },
+    );
+
+    res.send({ success: true, status });
+  }),
+);
+
+// approve / reject / inactive an item (admin only)
 app.patch(
   "/items/:id/status",
   verifyToken,
@@ -462,7 +742,7 @@ app.patch(
   validId,
   handle(async (req, res) => {
     const { status } = req.body;
-    if (!["pending", "approved", "rejected"].includes(status)) {
+    if (!["pending", "approved", "rejected", "inactive"].includes(status)) {
       return res.status(400).send({ message: "Invalid status" });
     }
     const result = await itemsCollection.updateOne(
@@ -505,18 +785,52 @@ app.post(
   verifyToken,
   verifyRole("customer"),
   handle(async (req, res) => {
-    const { items, deliveryAddress, customerPhone } = req.body;
+    const { items, deliveryAddress, customerPhone, deliveryDate, message } = req.body;
 
     if (!Array.isArray(items) || items.length === 0 || items.length > 20) {
       return res
         .status(400)
         .send({ success: false, message: "Order needs 1 to 20 items" });
     }
-    if (!deliveryAddress || typeof deliveryAddress !== "string") {
+    if (!deliveryAddress || typeof deliveryAddress !== "string" || !deliveryAddress.trim()) {
       return res
         .status(400)
         .send({ success: false, message: "Delivery address is required" });
     }
+    if (!deliveryDate) {
+      return res
+        .status(400)
+        .send({ success: false, message: "Delivery date is required" });
+    }
+    const parsedDeliveryDate = new Date(deliveryDate);
+    if (isNaN(parsedDeliveryDate.getTime())) {
+      return res
+        .status(400)
+        .send({ success: false, message: "Invalid delivery date" });
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const checkDeliveryDate = new Date(parsedDeliveryDate);
+    checkDeliveryDate.setHours(0, 0, 0, 0);
+    if (checkDeliveryDate < today) {
+      return res
+        .status(400)
+        .send({ success: false, message: "Delivery date cannot be in the past" });
+    }
+    if (message !== undefined && message !== null) {
+      if (typeof message !== "string") {
+        return res
+          .status(400)
+          .send({ success: false, message: "Message must be a string" });
+      }
+      if (message.trim().length > 500) {
+        return res
+          .status(400)
+          .send({ success: false, message: "Message cannot exceed 500 characters" });
+      }
+    }
+    const trimmedMessage = typeof message === "string" ? message.trim() : "";
+
     const badLine = items.some(
       (i) =>
         !ObjectId.isValid(i?.itemId) ||
@@ -544,11 +858,44 @@ app.post(
         message: "Some items are no longer available",
       });
     }
+
+    // 403 if item.vendorId === uid(req)
+    if (dbItems.some((item) => item.vendorId === uid(req))) {
+      return res.status(403).send({
+        success: false,
+        message: "You cannot order your own menu items",
+      });
+    }
+
     const vendorIds = new Set(dbItems.map((i) => i.vendorId));
     if (vendorIds.size > 1) {
       return res.status(400).send({
         success: false,
         message: "Order items from one vendor at a time",
+      });
+    }
+
+    // Duplicate check: same customer, same itemId, same delivery day, existing order with status pending or accepted = 409
+    const dayStart = new Date(parsedDeliveryDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(parsedDeliveryDate);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const duplicateOrder = await ordersCollection.findOne({
+      customerId: uid(req),
+      status: { $in: ["pending", "accepted"] },
+      $or: [
+        { deliveryDate: { $gte: dayStart, $lte: dayEnd } },
+        { deliveryDate: { $regex: `^${dayStart.toISOString().slice(0, 10)}` } },
+      ],
+      "items.itemId": { $in: ids },
+    });
+
+    if (duplicateOrder) {
+      return res.status(409).send({
+        success: false,
+        code: "DUPLICATE_ORDER",
+        message: "You already have a pending or accepted order for this item on that delivery date",
       });
     }
 
@@ -570,7 +917,9 @@ app.post(
       customerName: req.user.name,
       customerEmail: req.user.email,
       customerPhone: customerPhone || "",
-      deliveryAddress,
+      deliveryAddress: deliveryAddress.trim(),
+      deliveryDate: parsedDeliveryDate,
+      message: trimmedMessage,
       items: lines,
       totalAmount,
       vendorId: dbItems[0].vendorId,
@@ -858,7 +1207,31 @@ app.get(
   verifyToken,
   verifyRole("admin"),
   handle(async (req, res) => {
-    res.send(await paymentsCollection.find({}).sort({ _id: -1 }).toArray());
+    const rows = await transactionsCollection.find({}).sort({ _id: -1 }).toArray();
+    // batch vendor lookup
+    const vendorIds = [...new Set(rows.map((r) => r.vendorId).filter(Boolean))];
+    const objectIds = vendorIds.filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
+    const vendorDocs = await users
+      .find(
+        { _id: { $in: [...objectIds, ...vendorIds] } },
+        { projection: { name: 1, email: 1, businessName: 1 } },
+      )
+      .toArray();
+    const byId = new Map(vendorDocs.map((u) => [u._id.toString(), u]));
+
+    res.send(
+      rows.map((r) => {
+        const v = byId.get(r.vendorId?.toString()) ?? {};
+        return {
+          ...r,
+          vendorName: v.businessName || v.name || null,
+          name: v.name || null,
+          vendorEmail: v.email || null,
+          email: v.email || null,
+          businessName: v.businessName || null,
+        };
+      }),
+    );
   }),
 );
 
@@ -1027,10 +1400,10 @@ app.get(
       ordersCollection.countDocuments({ fulfillmentStatus: "delivered" }),
       sumAmount({ fulfillmentStatus: "delivered" }),
       ordersPerDay({}, 7),
-      // payments.amount is in cents (2900 = $29)
-      paymentsCollection
+      // transactions.amount is in cents (2900 = $29)
+      transactionsCollection
         .aggregate([
-          { $match: { payment_status: "paid" } },
+          { $match: { status: "paid" } },
           {
             $group: {
               _id: null,
@@ -1053,6 +1426,7 @@ app.get(
         orderRevenue,
         subscriptionRevenue: (subs[0]?.total ?? 0) / 100,
         subscriptions: subs[0]?.count ?? 0,
+        totalTransactions: subs[0]?.count ?? 0,
       },
       charts: {
         usersByRole,

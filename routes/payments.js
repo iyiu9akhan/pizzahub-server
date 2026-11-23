@@ -1,68 +1,45 @@
 import express from "express";
 
-export default function paymentsRouter(paymentsCollection, stripe) {
+export default function paymentsRouter(paymentsCollection, stripe, verifyToken) {
   const router = express.Router();
 
-  // payment verification API
-  router.post("/checkout-verify", async (req, res) => {
+  // Read-only: retrieve a Stripe session for the authenticated vendor who owns it.
+  // Never writes to DB, never activates premium.
+  router.post("/checkout-verify", verifyToken, async (req, res) => {
     try {
+      if (!req.user || req.user.role !== "vendor") {
+        return res.status(403).send({ message: "Forbidden" });
+      }
+
       const { sessionId } = req.body;
+      if (!sessionId) return res.status(400).send({ message: "sessionId required" });
 
-      // retrieve Stripe Checkout Session
-      const session = await stripe.checkout.sessions.retrieve(sessionId, {
-        expand: ["payment_intent"],
-      });
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-      // payment must be completed and paid
+      // vendor ownership: metadata.vendorId must match the logged-in vendor
+      if (session.metadata?.vendorId !== req.user._id.toString()) {
+        return res.status(403).send({ message: "Forbidden" });
+      }
+
       if (session.status !== "complete" || session.payment_status !== "paid") {
-        return res.status(400).send({
-          message: "Payment is not completed",
-        });
+        return res.status(400).send({ message: "Payment is not completed" });
       }
 
-      // check if payment already exists
-      const existingPayment = await paymentsCollection.findOne({
-        sessionId: session.id,
-      });
-
-      // return existing payment if already verified
-      if (existingPayment) {
-        return res.send({
-          message: "Payment already verified",
-          result: existingPayment,
-        });
-      }
-
-      // payment information
-      const payment = {
-        sessionId: session.id,
-        status: session.status,
-        payment_status: session.payment_status,
-        customer_email: session.customer_email,
-        userId: session.metadata?.vendorId,
-        payment_intent: session.payment_intent,
-        amount: session.amount_total,
-        currency: session.currency,
-        createdAt: new Date(),
-      };
-
-      // insert payment into database
-      const result = await paymentsCollection.insertOne(payment);
-
+      // read-only: return session info only
       res.send({
-        message: "Payment verified successfully",
+        message: "Payment verified",
         result: {
-          ...payment,
-          _id: result.insertedId,
+          sessionId: session.id,
+          status: session.status,
+          payment_status: session.payment_status,
+          customer_email: session.customer_email,
+          amount: session.amount_total,
+          currency: session.currency,
         },
       });
     } catch (error) {
       console.error("Payment verification error:", error);
-
-      res.status(500).send({
-        message: "Failed to verify payment",
-        error: error.message,
-      });
+      res.status(500).send({ message: "Failed to verify payment", error: error.message });
     }
   });
 
