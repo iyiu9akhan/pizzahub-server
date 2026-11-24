@@ -167,6 +167,30 @@ app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:3000" }));
 
 const ALLOWED_ROLES = ["customer", "vendor", "admin"];
 
+// keep the 3 oldest pending/approved items; deactivate extra APPROVED ones (never delete).
+// extra PENDING items are left alone: making them "inactive" would let the vendor
+// re-approve them from the availability toggle without admin review.
+const enforceFreeLimit = async (vendorId) => {
+  const rows = await itemsCollection
+    .find({
+      vendorId: String(vendorId),
+      status: { $in: ["pending", "approved"] },
+    })
+    .sort({ createdAt: 1, _id: 1 })
+    .project({ _id: 1, status: 1 })
+    .toArray();
+  const extraApprovedIds = rows
+    .slice(FREE_LIMIT)
+    .filter((r) => r.status === "approved")
+    .map((r) => r._id);
+  if (extraApprovedIds.length) {
+    await itemsCollection.updateMany(
+      { _id: { $in: extraApprovedIds } },
+      { $set: { status: "inactive", updatedAt: new Date() } },
+    );
+  }
+};
+
 // isPremiumActive: true only if premium flag is set and expiry is in the future (or no expiry)
 const isPremiumActive = async (user) => {
   if (!user || user.premium !== true) return false;
@@ -186,6 +210,7 @@ const isPremiumActive = async (user) => {
         },
       },
     );
+    await enforceFreeLimit(user._id);
     return false;
   }
   return true;
@@ -384,6 +409,35 @@ app.get(
       plan: premium ? "premium" : "free",
       expiresAt: premium ? (user.subscriptionExpiresAt ?? null) : null,
     });
+  }),
+);
+
+// vendor cancels his own Premium (no Stripe call: it is a one-time payment, no refund)
+app.post(
+  "/subscription/cancel",
+  verifyToken,
+  verifyRole("vendor"),
+  handle(async (req, res) => {
+    // vendor comes from the token, never from the client
+    if (!(await isPremiumActive(req.user))) {
+      return res.status(400).send({
+        success: false,
+        message: "You do not have an active Premium plan",
+      });
+    }
+    await users.updateOne(
+      { _id: req.user._id },
+      {
+        $set: {
+          premium: false,
+          subscriptionPlan: "free",
+          subscriptionExpiresAt: null,
+          updatedAt: new Date(),
+        },
+      },
+    );
+    await enforceFreeLimit(req.user._id);
+    res.send({ success: true, message: "Premium plan cancelled" });
   }),
 );
 
