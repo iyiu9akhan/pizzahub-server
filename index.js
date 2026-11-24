@@ -1251,7 +1251,6 @@ const countBy = async (collection, filter, field) => {
   return Object.fromEntries(rows.map((r) => [r._id ?? "none", r.count]));
 };
 
-// last N days, empty days filled with 0 (ready for a line / bar chart)
 const ordersPerDay = async (filter, days = 7) => {
   const since = new Date();
   since.setUTCDate(since.getUTCDate() - (days - 1));
@@ -1400,7 +1399,6 @@ app.get(
       ordersCollection.countDocuments({ fulfillmentStatus: "delivered" }),
       sumAmount({ fulfillmentStatus: "delivered" }),
       ordersPerDay({}, 7),
-      // transactions.amount is in cents (2900 = $29)
       transactionsCollection
         .aggregate([
           { $match: { status: "paid" } },
