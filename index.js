@@ -639,7 +639,7 @@ app.get(
 // single item. not approved items are visible only to the owner vendor and admins
 app.get(
   "/items/:id",
-  optionalAuth,
+  verifyToken,
   validId,
   handle(async (req, res) => {
     const item = await itemsCollection.findOne({
