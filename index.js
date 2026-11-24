@@ -67,7 +67,9 @@ app.post(
           process.env.STRIPE_WEBHOOK_SECRET,
         );
       } catch (err) {
-        return res.status(400).send({ message: `Webhook error: ${err.message}` });
+        return res
+          .status(400)
+          .send({ message: `Webhook error: ${err.message}` });
       }
 
       if (event.type === "checkout.session.completed") {
@@ -77,7 +79,8 @@ app.post(
           if (vendorId) {
             // Better Auth stores _id as a plain string; also try ObjectId for safety
             const idVariants = [vendorId];
-            if (ObjectId.isValid(vendorId)) idVariants.push(new ObjectId(vendorId));
+            if (ObjectId.isValid(vendorId))
+              idVariants.push(new ObjectId(vendorId));
             const query = { _id: { $in: idVariants } };
             const vendor = await users.findOne(query);
             if (vendor && vendor.role === "vendor") {
@@ -111,17 +114,14 @@ app.post(
                 if (e.code !== 11000) throw e; // ignore duplicate
               }
 
-              await users.updateOne(
-                query,
-                {
-                  $set: {
-                    premium: true,
-                    subscriptionPlan: "premium",
-                    subscriptionExpiresAt: expiresAt,
-                    updatedAt: now,
-                  },
+              await users.updateOne(query, {
+                $set: {
+                  premium: true,
+                  subscriptionPlan: "premium",
+                  subscriptionExpiresAt: expiresAt,
+                  updatedAt: now,
                 },
-              );
+              });
             }
           }
         }
@@ -137,19 +137,17 @@ app.post(
             );
             if (tx.vendorId) {
               const refundIdVariants = [tx.vendorId];
-              if (ObjectId.isValid(tx.vendorId)) refundIdVariants.push(new ObjectId(tx.vendorId));
+              if (ObjectId.isValid(tx.vendorId))
+                refundIdVariants.push(new ObjectId(tx.vendorId));
               const refundQuery = { _id: { $in: refundIdVariants } };
-              await users.updateOne(
-                refundQuery,
-                {
-                  $set: {
-                    premium: false,
-                    subscriptionPlan: "free",
-                    subscriptionExpiresAt: null,
-                    updatedAt: new Date(),
-                  },
+              await users.updateOne(refundQuery, {
+                $set: {
+                  premium: false,
+                  subscriptionPlan: "free",
+                  subscriptionExpiresAt: null,
+                  updatedAt: new Date(),
                 },
-              );
+              });
             }
           }
         }
@@ -254,10 +252,10 @@ const optionalAuth = handle(async (req, res, next) => {
 // role check. always use after verifyToken
 const verifyRole =
   (...roles) =>
-    (req, res, next) =>
-      roles.includes(req.user?.role)
-        ? next()
-        : res.status(403).send({ message: "Forbidden", code: "FORBIDDEN" });
+  (req, res, next) =>
+    roles.includes(req.user?.role)
+      ? next()
+      : res.status(403).send({ message: "Forbidden", code: "FORBIDDEN" });
 
 const validId = (req, res, next) =>
   ObjectId.isValid(req.params.id)
@@ -367,7 +365,14 @@ app.get(
     }
     const user = await users.findOne(
       { _id: new ObjectId(id) },
-      { projection: { premium: 1, role: 1, subscriptionPlan: 1, subscriptionExpiresAt: 1 } },
+      {
+        projection: {
+          premium: 1,
+          role: 1,
+          subscriptionPlan: 1,
+          subscriptionExpiresAt: 1,
+        },
+      },
     );
     if (!user) return res.status(404).send({ message: "User not found" });
 
@@ -534,7 +539,9 @@ async function enrichItemsWithPremium(items) {
   }
   return items.map((item) => ({
     ...item,
-    vendorPremium: item.vendorId ? premiumSet.has(String(item.vendorId)) : false,
+    vendorPremium: item.vendorId
+      ? premiumSet.has(String(item.vendorId))
+      : false,
   }));
 }
 
@@ -694,7 +701,9 @@ app.patch(
       vendorId,
     });
     if (!item) {
-      return res.status(404).send({ success: false, message: "Item not found" });
+      return res
+        .status(404)
+        .send({ success: false, message: "Item not found" });
     }
 
     // Allowed only between approved and inactive
@@ -785,14 +794,19 @@ app.post(
   verifyToken,
   verifyRole("customer"),
   handle(async (req, res) => {
-    const { items, deliveryAddress, customerPhone, deliveryDate, message } = req.body;
+    const { items, deliveryAddress, customerPhone, deliveryDate, message } =
+      req.body;
 
     if (!Array.isArray(items) || items.length === 0 || items.length > 20) {
       return res
         .status(400)
         .send({ success: false, message: "Order needs 1 to 20 items" });
     }
-    if (!deliveryAddress || typeof deliveryAddress !== "string" || !deliveryAddress.trim()) {
+    if (
+      !deliveryAddress ||
+      typeof deliveryAddress !== "string" ||
+      !deliveryAddress.trim()
+    ) {
       return res
         .status(400)
         .send({ success: false, message: "Delivery address is required" });
@@ -813,9 +827,10 @@ app.post(
     const checkDeliveryDate = new Date(parsedDeliveryDate);
     checkDeliveryDate.setHours(0, 0, 0, 0);
     if (checkDeliveryDate < today) {
-      return res
-        .status(400)
-        .send({ success: false, message: "Delivery date cannot be in the past" });
+      return res.status(400).send({
+        success: false,
+        message: "Delivery date cannot be in the past",
+      });
     }
     if (message !== undefined && message !== null) {
       if (typeof message !== "string") {
@@ -824,9 +839,10 @@ app.post(
           .send({ success: false, message: "Message must be a string" });
       }
       if (message.trim().length > 500) {
-        return res
-          .status(400)
-          .send({ success: false, message: "Message cannot exceed 500 characters" });
+        return res.status(400).send({
+          success: false,
+          message: "Message cannot exceed 500 characters",
+        });
       }
     }
     const trimmedMessage = typeof message === "string" ? message.trim() : "";
@@ -895,7 +911,8 @@ app.post(
       return res.status(409).send({
         success: false,
         code: "DUPLICATE_ORDER",
-        message: "You already have a pending or accepted order for this item on that delivery date",
+        message:
+          "You already have a pending or accepted order for this item on that delivery date",
       });
     }
 
@@ -959,7 +976,6 @@ app.post(
 //   }),
 // );
 
-
 app.get(
   ["/orders", "/orders/vendor", "/orders/customer"],
   verifyToken,
@@ -997,7 +1013,7 @@ app.get(
         orders
           .map((order) => order.customerId)
           .filter(Boolean)
-          .map(String)
+          .map(String),
       ),
     ];
 
@@ -1005,7 +1021,7 @@ app.get(
     const idVariants = customerIds.flatMap((customerId) =>
       ObjectId.isValid(customerId)
         ? [customerId, new ObjectId(customerId)]
-        : [customerId]
+        : [customerId],
     );
 
     // Fetch latest customer profiles
@@ -1018,15 +1034,12 @@ app.get(
             email: 1,
             image: 1,
           },
-        }
+        },
       )
       .toArray();
 
     const customerMap = new Map(
-      customers.map((customer) => [
-        String(customer._id),
-        customer,
-      ])
+      customers.map((customer) => [String(customer._id), customer]),
     );
 
     // Enrich orders with latest customer profile data
@@ -1042,9 +1055,8 @@ app.get(
     });
 
     return res.send(updatedOrders);
-  })
+  }),
 );
-
 
 // update an order: vendor (own orders) or admin (any order), same rules for both
 app.patch(
@@ -1294,10 +1306,15 @@ app.get(
   verifyToken,
   verifyRole("admin"),
   handle(async (req, res) => {
-    const rows = await transactionsCollection.find({}).sort({ _id: -1 }).toArray();
+    const rows = await transactionsCollection
+      .find({})
+      .sort({ _id: -1 })
+      .toArray();
     // batch vendor lookup
     const vendorIds = [...new Set(rows.map((r) => r.vendorId).filter(Boolean))];
-    const objectIds = vendorIds.filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
+    const objectIds = vendorIds
+      .filter((id) => ObjectId.isValid(id))
+      .map((id) => new ObjectId(id));
     const vendorDocs = await users
       .find(
         { _id: { $in: [...objectIds, ...vendorIds] } },
@@ -1338,7 +1355,7 @@ const countBy = async (collection, filter, field) => {
   return Object.fromEntries(rows.map((r) => [r._id ?? "none", r.count]));
 };
 
-const ordersPerDay = async (filter, days = 7) => {
+const ordersPerDay = async (filter, days = 7, deliveredRevenueOnly = false) => {
   const since = new Date();
   since.setUTCDate(since.getUTCDate() - (days - 1));
   since.setUTCHours(0, 0, 0, 0);
@@ -1351,8 +1368,22 @@ const ordersPerDay = async (filter, days = 7) => {
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m-%d", date: "$_at" } },
-          orders: { $sum: 1 },
-          revenue: { $sum: amount },
+          orders: {
+            $sum: deliveredRevenueOnly
+              ? { $cond: [{ $eq: ["$fulfillmentStatus", "delivered"] }, 1, 0] }
+              : 1,
+          },
+          revenue: {
+            $sum: deliveredRevenueOnly
+              ? {
+                  $cond: [
+                    { $eq: ["$fulfillmentStatus", "delivered"] },
+                    amount,
+                    0,
+                  ],
+                }
+              : amount,
+          },
         },
       },
     ])
@@ -1396,7 +1427,7 @@ app.get(
           fulfillmentStatus: "delivered",
         }),
         sumAmount({ vendorId, fulfillmentStatus: "delivered" }),
-        ordersPerDay({ vendorId }, 7),
+        ordersPerDay({ vendorId }, 7, true),
         ordersCollection
           .aggregate([
             { $match: { vendorId } },
@@ -1444,8 +1475,8 @@ app.get(
           customerId,
           fulfillmentStatus: "delivered",
         }),
-        sumAmount({ customerId, status: { $in: ["pending", "accepted"] } }),
-        ordersPerDay({ customerId }, 7),
+        sumAmount({ customerId, fulfillmentStatus: "delivered" }),
+        ordersPerDay({ customerId }, 7, true),
         wishlistCollection.countDocuments({ customerId }),
         reviewsCollection.countDocuments({ customerId }),
       ]);
@@ -1485,7 +1516,7 @@ app.get(
       countBy(ordersCollection, {}, "status"),
       ordersCollection.countDocuments({ fulfillmentStatus: "delivered" }),
       sumAmount({ fulfillmentStatus: "delivered" }),
-      ordersPerDay({}, 7),
+      ordersPerDay({}, 7, true),
       transactionsCollection
         .aggregate([
           { $match: { status: "paid" } },
