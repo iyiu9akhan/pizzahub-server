@@ -937,6 +937,29 @@ app.post(
 );
 
 // orders by role.
+// app.get(
+//   ["/orders", "/orders/vendor", "/orders/customer"],
+//   verifyToken,
+//   handle(async (req, res) => {
+//     const id = uid(req);
+//     let filter;
+
+//     if (req.user.role === "vendor") filter = { vendorId: id };
+//     else if (req.user.role === "customer") filter = { customerId: id };
+//     else if (req.user.role === "admin") {
+//       filter = {};
+//       if (req.query.vendorId) filter.vendorId = req.query.vendorId;
+//       if (req.query.customerId) filter.customerId = req.query.customerId;
+//       if (req.query.status) filter.status = req.query.status;
+//     } else {
+//       return res.status(403).send({ message: "Forbidden" });
+//     }
+
+//     res.send(await ordersCollection.find(filter).sort({ _id: -1 }).toArray());
+//   }),
+// );
+
+
 app.get(
   ["/orders", "/orders/vendor", "/orders/customer"],
   verifyToken,
@@ -944,10 +967,13 @@ app.get(
     const id = uid(req);
     let filter;
 
-    if (req.user.role === "vendor") filter = { vendorId: id };
-    else if (req.user.role === "customer") filter = { customerId: id };
-    else if (req.user.role === "admin") {
+    if (req.user.role === "vendor") {
+      filter = { vendorId: id };
+    } else if (req.user.role === "customer") {
+      filter = { customerId: id };
+    } else if (req.user.role === "admin") {
       filter = {};
+
       if (req.query.vendorId) filter.vendorId = req.query.vendorId;
       if (req.query.customerId) filter.customerId = req.query.customerId;
       if (req.query.status) filter.status = req.query.status;
@@ -955,9 +981,70 @@ app.get(
       return res.status(403).send({ message: "Forbidden" });
     }
 
-    res.send(await ordersCollection.find(filter).sort({ _id: -1 }).toArray());
-  }),
+    // Get orders
+    const orders = await ordersCollection
+      .find(filter)
+      .sort({ _id: -1 })
+      .toArray();
+
+    if (!orders.length) {
+      return res.send([]);
+    }
+
+    // Collect unique customer IDs
+    const customerIds = [
+      ...new Set(
+        orders
+          .map((order) => order.customerId)
+          .filter(Boolean)
+          .map(String)
+      ),
+    ];
+
+    // Support string IDs and ObjectIds
+    const idVariants = customerIds.flatMap((customerId) =>
+      ObjectId.isValid(customerId)
+        ? [customerId, new ObjectId(customerId)]
+        : [customerId]
+    );
+
+    // Fetch latest customer profiles
+    const customers = await users
+      .find(
+        { _id: { $in: idVariants } },
+        {
+          projection: {
+            name: 1,
+            email: 1,
+            image: 1,
+          },
+        }
+      )
+      .toArray();
+
+    const customerMap = new Map(
+      customers.map((customer) => [
+        String(customer._id),
+        customer,
+      ])
+    );
+
+    // Enrich orders with latest customer profile data
+    const updatedOrders = orders.map((order) => {
+      const customer = customerMap.get(String(order.customerId));
+
+      return {
+        ...order,
+        customerName: customer?.name ?? order.customerName,
+        customerEmail: customer?.email ?? order.customerEmail,
+        customerImage: customer?.image ?? order.customerImage ?? null,
+      };
+    });
+
+    return res.send(updatedOrders);
+  })
 );
+
 
 // update an order: vendor (own orders) or admin (any order), same rules for both
 app.patch(
