@@ -17,6 +17,7 @@ REST API for **PizzaHub**, a role-based pizza ordering and delivery platform. Th
 - [Premium Subscription and Stripe Webhook](#premium-subscription-and-stripe-webhook)
 - [Deployment](#deployment)
 - [Author](#author)
+
 ## Links
  
 | Resource | URL |
@@ -25,6 +26,28 @@ REST API for **PizzaHub**, a role-based pizza ordering and delivery platform. Th
 | Live Server | https://iyiu9akhan-pizzahub-server.vercel.app |
 | Client Repository | https://github.com/iyiu9akhan/pizzahub |
 | Server Repository | https://github.com/iyiu9akhan/pizzahub-server |
+
+## Demo Accounts
+ 
+Use these accounts to test protected routes. Sign in through the [live website](https://iyiu9akhan-pizzahub.vercel.app/) or a local client. All demo accounts share the same password: `Pa$$w0rd!`
+ 
+**Vendors**
+ 
+| Restaurant | Email |
+|---|---|
+| Dhaka Pizza Co. | dhakapizza@gmail.com |
+| Sultan's Pizza Kitchen | sultanpizzakitchen@gmail.com |
+| Old Town Pizza House | oldtownpizzahouse@gmail.com |
+| Chittagong Pizza Corner | chittagongpizzacorner@gmail.com |
+ 
+**Customers**
+ 
+| Name | Email |
+|---|---|
+| Mahin Rahman | mahin.rahman@gmail.com |
+| Farzana Ahmed | farzana.ahmed@gmail.com |
+| Sakib Hasan | sakib.hasan@gmail.com |
+| Tasmia Islam | tasmia.islam@gmail.com |
  
 ## Features
  
@@ -37,6 +60,7 @@ REST API for **PizzaHub**, a role-based pizza ordering and delivery platform. Th
 - Premium activated only after a verified Stripe webhook event
 - Read-only transaction history for admins
 - Reviews, wishlist, and role-specific dashboard statistics
+
 ## Tech Stack
  
 | Area | Technology |
@@ -63,6 +87,7 @@ Role capabilities at a glance:
 - **Customer:** browse menu, place and cancel orders, write reviews, manage a wishlist
 - **Vendor:** manage menu items, accept or reject orders, upgrade to Premium
 - **Admin:** manage users (block and unblock), moderate menu items, view transactions (read-only)
+
 ## Getting Started
  
 ### Prerequisites
@@ -126,27 +151,6 @@ Create a `.env` file in the project root. Never commit it.
 | `STRIPE_SECRET_KEY` | Stripe secret key |
 | `STRIPE_WEBHOOK_SECRET` | Signing secret of the Stripe webhook |
  
-## Demo Accounts
- 
-Use these accounts to test protected routes. Sign in through the [live website](https://iyiu9akhan-pizzahub.vercel.app/) or a local client. All demo accounts share the same password: `Pa$$w0rd!`
- 
-**Vendors**
- 
-| Restaurant | Email |
-|---|---|
-| Dhaka Pizza Co. | dhakapizza@gmail.com |
-| Sultan's Pizza Kitchen | sultanpizzakitchen@gmail.com |
-| Old Town Pizza House | oldtownpizzahouse@gmail.com |
-| Chittagong Pizza Corner | chittagongpizzacorner@gmail.com |
- 
-**Customers**
- 
-| Name | Email |
-|---|---|
-| Mahin Rahman | mahin.rahman@gmail.com |
-| Farzana Ahmed | farzana.ahmed@gmail.com |
-| Sakib Hasan | sakib.hasan@gmail.com |
-| Tasmia Islam | tasmia.islam@gmail.com |
  
 ## Authentication and Authorization
  

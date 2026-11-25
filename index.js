@@ -77,7 +77,6 @@ app.post(
         if (session.payment_status === "paid") {
           const vendorId = session.metadata?.vendorId;
           if (vendorId) {
-            // Better Auth stores _id as a plain string; also try ObjectId for safety
             const idVariants = [vendorId];
             if (ObjectId.isValid(vendorId))
               idVariants.push(new ObjectId(vendorId));
@@ -167,8 +166,6 @@ app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:3000" }));
 
 const ALLOWED_ROLES = ["customer", "vendor", "admin"];
 
-// keep the 3 oldest pending/approved items; deactivate extra APPROVED ones (never delete).
-// extra PENDING items are left alone: making them "inactive" would let the vendor
 // re-approve them from the availability toggle without admin review.
 const enforceFreeLimit = async (vendorId) => {
   const rows = await itemsCollection
@@ -231,7 +228,7 @@ const handle = (fn) => (req, res, next) =>
     res.status(500).send({ success: false, message: "Something went wrong" });
   });
 
-const uid = (req) => req.user._id.toString(); // logged in user id (from token)
+const uid = (req) => req.user._id.toString(); 
 const pick = (obj, keys) =>
   Object.fromEntries(
     keys.filter((k) => obj?.[k] !== undefined).map((k) => [k, obj[k]]),
