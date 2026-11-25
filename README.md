@@ -48,6 +48,7 @@ Use these accounts to test protected routes. Sign in through the [live website](
 | Farzana Ahmed | farzana.ahmed@gmail.com |
 | Sakib Hasan | sakib.hasan@gmail.com |
 | Tasmia Islam | tasmia.islam@gmail.com |
+| Tanvir Ahmed  | tanvir.ahmed@example.com |
  
 ## Features
  
